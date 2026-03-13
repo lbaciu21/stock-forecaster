@@ -138,6 +138,7 @@ from xgboost import XGBRegressor
 import requests
 from io import StringIO
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import torch
 import gc
 
 @st.cache_resource(max_entries=1)
@@ -150,7 +151,7 @@ def load_finbert():
 def get_sentiment(ticker, nlp):
     try:
         url = f'https://finviz.com/quote.ashx?t={ticker}'
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=10)
         news_table = pd.read_html(StringIO(response.text), attrs={'id': 'news-table'})[0]
         headlines = news_table[1].head(5).tolist()
@@ -170,18 +171,22 @@ def get_sentiment(ticker, nlp):
 def load_data(ticker):
     try:
         
-        data = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False)
+        session = requests.Session()
+        session.headers.update({"User-Agent": "Mozilla/5.0"})
+        
+      
+        ticker_obj = yf.Ticker(ticker, session=session)
+        data = ticker_obj.history(period="2y")
         
         if data.empty or len(data) < 20:
             return pd.DataFrame()
-        
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
             
         data = data.reset_index()
+        data.columns = [str(c) for c in data.columns]
         
-        data['Close'] = data['Close'].astype(float)
+        if 'Close' not in data.columns and 'Price' in data.columns:
+            data.rename(columns={'Price': 'Close'}, inplace=True)
+            
         return data
     except:
         return pd.DataFrame()
@@ -190,19 +195,24 @@ def main():
     st.set_page_config(page_title="Stock Forecaster AI", layout="wide")
     st.title("📈 Stock Forecaster (XGBoost + FinBERT)")
     
-    ticker = st.text_input("Enter Stock Ticker (e.g., AAPL, TSLA, NVDA)", value="AAPL").upper()
+    st.markdown("Combined historical price data and NLP sentiment analysis.")
+    st.markdown("**Disclaimer:** Take the predictions with at least one grain of salt.")
+
+    ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA)", "AAPL").upper()
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
 
     data = load_data(ticker)
 
     if data.empty:
-        st.error(f"Yahoo Finance blocked the request or {ticker} has no data. Try AAPL or refresh the page.")
+        st.error(f"Data connection blocked for {ticker}. Please try again in 5 minutes or try a different ticker.")
+        if st.button("Force Refresh Connection"):
+            st.cache_data.clear()
+            st.rerun()
         return
 
-    
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Price"))
-    fig.update_layout(template="plotly_dark", title=f"{ticker} Historical Data")
+    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
+    fig.update_layout(template="plotly_dark", title=f"{ticker} History")
     st.plotly_chart(fig, use_container_width=True)
 
     with st.spinner("Analyzing Sentiment..."):
@@ -211,7 +221,6 @@ def main():
 
     if st.button("Generate AI Forecast"):
         try:
-           
             df = data.copy()
             for i in range(1, 11):
                 df[f"lag_{i}"] = df["Close"].shift(i)
@@ -224,25 +233,23 @@ def main():
             model = XGBRegressor(n_estimators=50, learning_rate=0.05)
             model.fit(X, y)
 
-            # Prediction Loop
-            prices = data["Close"].tail(10).tolist()
+            last_values = data["Close"].tail(10).tolist()
             preds = []
             for i in range(forecast_days):
                 decay = current_sentiment * (0.9 ** i)
-              
-                inp = pd.DataFrame([[*prices, decay]], columns=features)
+                inp = pd.DataFrame([[*last_values, decay]], columns=features)
                 p = model.predict(inp)[0]
                 preds.append(float(p))
-                prices = prices[1:] + [float(p)]
+                last_values = last_values[1:] + [float(p)]
 
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days + 1)[1:]
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=data["Date"].tail(50), y=data["Close"].tail(50), name="Recent"))
-            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="Forecast", line=dict(color="red")))
+            fig2.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
+            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red")))
             st.plotly_chart(fig2, use_container_width=True)
             
         except Exception as e:
-            st.error(f"AI Error: {e}")
+            st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
