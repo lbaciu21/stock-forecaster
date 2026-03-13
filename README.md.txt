@@ -1,27 +1,16 @@
 Stock Forecaster App
 
-A simple python app which predicts prices using ML, more precisely, XGBOOST, and allows an interactive exploration with Streamlit.
+A simple python app which predicts prices using ML, more precisely XGBOOST, and FinBERT, allowing an interactive exploration with Streamlit.
 
-The features are:
-- Load historical stock data for S&P500
-- Train XGBoost Model
-- Visualize the predictions
-- Interactive interface with the help of Streamlit
 
-Installation
-1. Clone the repo:
-   ```bash
-   git clone <your-repo-url>
-   cd <project-folder>
+How it works
+1. Historical Data: Fetches 2 years of price data via the yfinance library.
+2. AI Sentiment: Uses FinBERT (Natural Language Processing) to scan the latest news headlines from Finviz.
+3. Prediction: Trains an XGBoost Regressor on previous prices and the current sentiment score.
+4. Decay Logic: The model includes a decay feature where the impact of today's news gradually fades over the 30-60 day forecast period.
 
-2. Create a virtual environment
-python -m venv venv
-# Linux/macOS
-source venv/bin/activate
-# Windows
-venv\Scripts\activate
-
-3. Install dependencies:
-pip install -r requirements.txt
-
-Run the app with: streamlit run app.py
+Tech Stack
+Python
+Streamlit (Web Interface)
+XGBoost (Machine Learning)
+Transformers 
