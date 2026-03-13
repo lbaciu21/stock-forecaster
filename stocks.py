@@ -55,7 +55,7 @@ def create_lags(data, sentiment, n_lags=10):
     df = data.copy()
     for i in range(1, n_lags + 1):
         df[f"lag_{i}"] = df["Close"].shift(i)
-    df["sentiment"] = sentiment
+    df["sentiment"] = float(sentiment)
     df.dropna(inplace=True)
     features = [f"lag_{i}" for i in range(1, n_lags + 1)] + ["sentiment"]
     return df[features], df["Close"]
@@ -98,18 +98,26 @@ def main():
             model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
             model.fit(X, y)
 
-            last_values = data["Close"].values[-10:].flatten().tolist()
+            # --- DATA HANDLING REWRITE ---
+            prices = data["Close"].values[-10:].flatten().tolist()
             preds = []
-            feature_names = X.columns.tolist()
+            cols = X.columns.tolist()
 
             for i in range(forecast_days):
-                decayed_sentiment = float(current_sentiment * (0.9 ** i))
-                combined_values = last_values + [decayed_sentiment]
-                inp = pd.DataFrame([combined_values], columns=feature_names)
+                decay = float(current_sentiment * (0.9 ** i))
+                
+                # Use a dictionary to build the row - this is the safest way
+                row_data = {}
+                for idx, val in enumerate(prices):
+                    row_data[f"lag_{idx+1}"] = val
+                row_data["sentiment"] = decay
+                
+                inp = pd.DataFrame([row_data])[cols]
                 
                 p = model.predict(inp)[0]
                 preds.append(float(p))
-                last_values = last_values[1:] + [float(p)]
+                
+                prices = prices[1:] + [float(p)]
 
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
             
@@ -119,7 +127,6 @@ def main():
             fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast Result")
             st.plotly_chart(fig2, use_container_width=True)
 
-            st.subheader("Forecasted Data (Next 10 Days)")
             st.table(pd.DataFrame({"Date": future_dates, "Predicted Price": preds}).head(10))
             
         except Exception as e:
