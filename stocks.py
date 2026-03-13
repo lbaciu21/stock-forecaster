@@ -174,23 +174,20 @@ def get_sp500():
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         return pd.read_html(StringIO(res.text))[0]["Symbol"].tolist()
     except:
-        return ["AAPL", "MSFT", "GOOGL", "NVDA", "TSLA"]
+        return ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]
 
 @st.cache_data
 def load_data(ticker):
     try:
-        # Increased period to ensure enough data for lags
-        data = yf.download(ticker, period="2y", interval="1d")
+        data = yf.download(ticker, period="2y", interval="1d", auto_adjust=True)
         if data.empty:
             return pd.DataFrame()
-        
-        # Flatten MultiIndex columns if they exist
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-        
         data = data.reset_index()
-        # Convert Close column to a flat 1D Series
-        data['Close'] = data['Close'].squeeze()
+        data.columns = [str(c) for c in data.columns]
+        if 'Close' not in data.columns and 'Price' in data.columns:
+            data.rename(columns={'Price': 'Close'}, inplace=True)
         return data
     except:
         return pd.DataFrame()
@@ -208,18 +205,20 @@ def main():
     st.set_page_config(page_title="Stock Forecaster AI", layout="wide")
     st.title("📈 Stock Forecaster (XGBoost + FinBERT)")
     
-    st.markdown("This model combines historical price data with NLP to predict future trends.")
+    st.markdown("Combined historical price data and NLP sentiment analysis.")
     st.markdown("**Disclaimer:** Take the predictions with at least one grain of salt.")
 
     tickers = get_sp500()
-    ticker = st.selectbox("Select Stock Ticker", tickers, index=tickers.index("AAPL") if "AAPL" in tickers else 0)
+    ticker = st.selectbox("Select Stock Ticker", tickers, index=0)
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
 
     data = load_data(ticker)
 
-    # Check for at least 20 rows of data (10 for lags + some for training)
     if data.empty or len(data) < 20:
-        st.error(f"Not enough historical data found for {ticker}. yfinance may be struggling with this ticker. Please try a major ticker like AAPL or TSLA.")
+        st.error(f"Could not fetch enough data for {ticker}. Try a major ticker like AAPL or NVDA.")
+        if st.button("Clear Cache & Retry"):
+            st.cache_data.clear()
+            st.rerun()
         return
 
     fig = go.Figure()
@@ -240,11 +239,10 @@ def main():
         try:
             n_lags = 10
             X, y = create_lags(data, current_sentiment, n_lags)
-            
             model = XGBRegressor(n_estimators=50, learning_rate=0.05, max_depth=5)
             model.fit(X, y)
 
-            last_values = data["Close"].tail(n_lags).tolist()
+            last_values = data["Close"].tail(n_lags).values.flatten().tolist()
             feature_cols = X.columns.tolist()
             preds = []
 
