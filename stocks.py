@@ -98,21 +98,16 @@ def main():
             model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
             model.fit(X, y)
 
-            # --- DATA HANDLING REWRITE ---
             prices = data["Close"].values[-10:].flatten().tolist()
             preds = []
-            cols = X.columns.tolist()
+            feature_cols = X.columns.tolist()
 
             for i in range(forecast_days):
                 decay = float(current_sentiment * (0.9 ** i))
                 
-                # Use a dictionary to build the row - this is the safest way
-                row_data = {}
-                for idx, val in enumerate(prices):
-                    row_data[f"lag_{idx+1}"] = val
-                row_data["sentiment"] = decay
+                combined_values = prices + [decay]
                 
-                inp = pd.DataFrame([row_data])[cols]
+                inp = pd.DataFrame([combined_values], columns=feature_cols)
                 
                 p = model.predict(inp)[0]
                 preds.append(float(p))
