@@ -33,9 +33,9 @@ def get_sentiment(ticker, nlp):
             else: scores.append(0)
         avg_score = np.mean(scores)
         gc.collect() 
-        return avg_score
+        return float(avg_score)
     except:
-        return 0
+        return 0.0
 
 @st.cache_data
 def get_sp500():
@@ -103,13 +103,12 @@ def main():
             feature_names = X.columns.tolist()
 
             for i in range(forecast_days):
-                decayed_sentiment = current_sentiment * (0.9 ** i)
+                decayed_sentiment = float(current_sentiment * (0.9 ** i))
                 combined_values = last_values + [decayed_sentiment]
                 inp = pd.DataFrame([combined_values], columns=feature_names)
                 
                 p = model.predict(inp)[0]
                 preds.append(float(p))
-                
                 last_values = last_values[1:] + [float(p)]
 
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
