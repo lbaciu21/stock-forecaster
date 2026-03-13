@@ -13,7 +13,7 @@ import gc
 # --- MEMORY OPTIMIZED MODEL LOADING ---
 @st.cache_resource(max_entries=1)
 def load_finbert():
-    # Explicitly using CPU version to stay within Streamlit's free tier RAM limits
+    # CPU-only loading to stay within Streamlit's 1GB RAM limit
     model_name = "ProsusAI/finbert"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -40,7 +40,7 @@ def get_sentiment(ticker, nlp):
                 scores.append(0)
         
         avg_score = np.mean(scores)
-        gc.collect() # Crucial: cleanup memory after NLP finishes
+        gc.collect() # Free up RAM
         return avg_score
     except:
         return 0
@@ -78,18 +78,24 @@ def main():
 
 **Disclaimer:** Take the predictions with at least one grain of salt.""")
 
-    # 1. Model Initialization
-    with st.spinner("Initializing FinBERT AI (Loading brain...)..."):
-        nlp = load_finbert()
-
-    # 2. User Inputs (Main Page)
+    # 1. Inputs First
     tickers = get_sp500()
     ticker = st.selectbox("Select Stock Ticker", tickers, index=tickers.index("AAPL"))
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
     
+    # 2. Show Historical Data Immediately
     data = load_data(ticker)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical Price"))
+    fig.update_layout(template="plotly_dark", title=f"{ticker} 2-Year Price History")
+    st.plotly_chart(fig, use_container_width=True)
 
-    # 3. Sentiment Analysis Display
+    # 3. Load AI Model in Background
+    with st.spinner("Initializing FinBERT AI (Loading brain...)..."):
+        nlp = load_finbert()
+
+    # 4. Sentiment Section
     current_sentiment = get_sentiment(ticker, nlp)
     
     st.subheader(f"Market Sentiment for {ticker}")
@@ -100,41 +106,37 @@ def main():
     else:
         st.info(f"Neutral Sentiment: {current_sentiment:.2f}")
 
-    # 4. Historical Chart
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical Price"))
-    fig.update_layout(template="plotly_dark", title=f"{ticker} 2-Year Price History")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 5. Forecasting Logic
+    # 5. Forecast Generation
     if st.button("Generate AI Forecast"):
-        # Create features and train model
+        # Training
         X, y = create_lags(data, current_sentiment)
         model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
         model.fit(X, y)
 
-        # Iterative Prediction Loop
+        # Predicting
         last_values = data["Close"].values[-10:]
         preds = []
         
         for i in range(forecast_days):
-            # Apply Decay: News impact fades by 10% daily
             decayed_sentiment = current_sentiment * (0.9 ** i)
-            inp = np.append(last_values, decayed_sentiment).reshape(1, -1)
+            
+            # RESHAPE FIX: Convert 1D list to 2D row (1 row, 11 columns)
+            combined_input = np.append(last_values, decayed_sentiment)
+            inp = combined_input.reshape(1, -1)
             
             p = model.predict(inp)[0]
             preds.append(p)
             
-            # Slide window forward
+            # Slide window
             last_values = np.append(last_values[1:], p)
 
-        # Result Display
+        # Plot Forecast
         future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
         
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
         fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red", width=3)))
-        fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast with Sentiment Decay")
+        fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast Result")
         st.plotly_chart(fig2, use_container_width=True)
 
         st.subheader("Forecasted Data (Next 10 Days)")
