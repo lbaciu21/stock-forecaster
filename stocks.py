@@ -78,24 +78,23 @@ def main():
 
 **Disclaimer:** Take the predictions with at least one grain of salt.""")
 
-    # 1. Inputs First
+    # 1. Inputs & Data Loading (Graphing comes FIRST)
     tickers = get_sp500()
     ticker = st.selectbox("Select Stock Ticker", tickers, index=tickers.index("AAPL"))
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
     
-    # 2. Show Historical Data Immediately
     data = load_data(ticker)
     
+    # Show Historical Chart immediately so the page isn't empty
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical Price"))
     fig.update_layout(template="plotly_dark", title=f"{ticker} 2-Year Price History")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 3. Load AI Model in Background
+    # 2. Initialize AI (This happens in the background)
     with st.spinner("Initializing FinBERT AI (Loading brain...)..."):
         nlp = load_finbert()
 
-    # 4. Sentiment Section
     current_sentiment = get_sentiment(ticker, nlp)
     
     st.subheader(f"Market Sentiment for {ticker}")
@@ -106,31 +105,33 @@ def main():
     else:
         st.info(f"Neutral Sentiment: {current_sentiment:.2f}")
 
-    # 5. Forecast Generation
+    # 3. Forecast Logic
     if st.button("Generate AI Forecast"):
-        # Training
+        # Training the model
         X, y = create_lags(data, current_sentiment)
         model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
         model.fit(X, y)
 
-        # Predicting
+        # Iterative Prediction Loop
         last_values = data["Close"].values[-10:]
         preds = []
         
         for i in range(forecast_days):
             decayed_sentiment = current_sentiment * (0.9 ** i)
             
-            # RESHAPE FIX: Convert 1D list to 2D row (1 row, 11 columns)
+            # THE FIX: Combine and RESHAPE to (1, 11)
+            # This turns a list of numbers into a single row for the AI
             combined_input = np.append(last_values, decayed_sentiment)
-            inp = combined_input.reshape(1, -1)
+            inp = combined_input.reshape(1, -1) 
             
+            # Predict
             p = model.predict(inp)[0]
             preds.append(p)
             
             # Slide window
             last_values = np.append(last_values[1:], p)
 
-        # Plot Forecast
+        # 4. Plot Forecast Result
         future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
         
         fig2 = go.Figure()
