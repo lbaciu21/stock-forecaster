@@ -98,21 +98,21 @@ def main():
             model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
             model.fit(X, y)
 
-            prices = data["Close"].values[-10:].flatten().tolist()
+            last_values = data["Close"].values[-10:].flatten().tolist()
             preds = []
             feature_cols = X.columns.tolist()
 
             for i in range(forecast_days):
                 decay = float(current_sentiment * (0.9 ** i))
+                combined = np.append(last_values, decay)
+                combined_reshaped = combined.reshape(1, -1)
                 
-                combined_values = prices + [decay]
-                
-                inp = pd.DataFrame([combined_values], columns=feature_cols)
+                inp = pd.DataFrame(combined_reshaped, columns=feature_cols)
                 
                 p = model.predict(inp)[0]
                 preds.append(float(p))
                 
-                prices = prices[1:] + [float(p)]
+                last_values = last_values[1:] + [float(p)]
 
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
             
