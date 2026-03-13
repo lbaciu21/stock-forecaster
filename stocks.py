@@ -10,13 +10,11 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 import torch
 import gc 
 
-
 @st.cache_resource(max_entries=1)
 def load_finbert():
     model_name = "ProsusAI/finbert"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(model_name)
-  
     return pipeline("sentiment-analysis", model=model, tokenizer=tokenizer, device=-1)
 
 def get_sentiment(ticker, nlp):
@@ -64,18 +62,17 @@ def create_lags(data, sentiment, n_lags=10):
 
 def main():
     st.set_page_config(page_title="Stock Forecaster AI", layout="wide")
-    st.title(" Stock Forecaster (XGBoost + FinBERT)")
+    st.title("📈 Stock Forecaster (XGBoost + FinBERT)")
     
     st.markdown("""This model combines historical price data with Natural Language Processing to predict future trends.
 
 **Disclaimer:** Take the predictions with at least one grain of salt.""")
 
-
+    
     tickers = get_sp500()
     ticker = st.selectbox("Select Stock Ticker", tickers, index=tickers.index("AAPL"))
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
     
-  
     data = load_data(ticker)
     
     fig = go.Figure()
@@ -83,7 +80,8 @@ def main():
     fig.update_layout(template="plotly_dark", title=f"{ticker} 2-Year Price History")
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.spinner("Initializing FinBERT AI (Loading brain...)..."):
+    
+    with st.spinner("Initializing FinBERT AI..."):
         nlp = load_finbert()
 
     current_sentiment = get_sentiment(ticker, nlp)
@@ -96,31 +94,32 @@ def main():
     else:
         st.info(f"Neutral Sentiment: {current_sentiment:.2f}")
 
+    
     if st.button("Generate AI Forecast"):
         try:
-           
+            
             X, y = create_lags(data, current_sentiment)
             model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
             model.fit(X, y)
 
-            
-            last_values = data["Close"].values[-10:]
+            last_values = list(data["Close"].values[-10:])
             preds = []
             feature_names = X.columns.tolist()
 
             
             for i in range(forecast_days):
                 decayed_sentiment = current_sentiment * (0.9 ** i)
-                combined_values = np.append(last_values, decayed_sentiment)
                 
+                
+                combined_values = last_values + [decayed_sentiment]
                 
                 inp = pd.DataFrame([combined_values], columns=feature_names)
                 
                 p = model.predict(inp)[0]
-                preds.append(p)
+                preds.append(float(p))
                 
-                
-                last_values = np.append(last_values[1:], p)
+            
+                last_values = last_values[1:] + [float(p)]
 
             
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
@@ -131,6 +130,7 @@ def main():
             fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast Result")
             st.plotly_chart(fig2, use_container_width=True)
 
+            st.subheader("Forecasted Data (Next 10 Days)")
             st.table(pd.DataFrame({"Date": future_dates, "Predicted Price": preds}).head(10))
             
         except Exception as e:
