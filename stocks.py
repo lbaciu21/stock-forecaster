@@ -13,7 +13,6 @@ import gc
 # --- MEMORY OPTIMIZED MODEL LOADING ---
 @st.cache_resource(max_entries=1)
 def load_finbert():
-    # CPU-only loading to stay within Streamlit's 1GB RAM limit
     model_name = "ProsusAI/finbert"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -27,20 +26,14 @@ def get_sentiment(ticker, nlp):
         soup = StringIO(response.text)
         news_table = pd.read_html(soup, attrs={'id': 'news-table'})[0]
         headlines = news_table[1].head(5).tolist() 
-        
         results = nlp(headlines)
-        
         scores = []
         for res in results:
-            if res['label'] == 'positive':
-                scores.append(res['score'])
-            elif res['label'] == 'negative':
-                scores.append(-res['score'])
-            else:
-                scores.append(0)
-        
+            if res['label'] == 'positive': scores.append(res['score'])
+            elif res['label'] == 'negative': scores.append(-res['score'])
+            else: scores.append(0)
         avg_score = np.mean(scores)
-        gc.collect() # Free up RAM
+        gc.collect() 
         return avg_score
     except:
         return 0
@@ -63,10 +56,8 @@ def create_lags(data, sentiment, n_lags=10):
     df = data.copy()
     for i in range(1, n_lags + 1):
         df[f"lag_{i}"] = df["Close"].shift(i)
-    
     df["sentiment"] = sentiment
     df.dropna(inplace=True)
-    
     features = [f"lag_{i}" for i in range(1, n_lags + 1)] + ["sentiment"]
     return df[features], df["Close"]
 
@@ -78,20 +69,20 @@ def main():
 
 **Disclaimer:** Take the predictions with at least one grain of salt.""")
 
-    # 1. Inputs & Data Loading (Graphing comes FIRST)
+    # 1. SETUP INPUTS
     tickers = get_sp500()
     ticker = st.selectbox("Select Stock Ticker", tickers, index=tickers.index("AAPL"))
     forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
     
+    # 2. SHOW HISTORICAL GRAPH FIRST (This will always show now)
     data = load_data(ticker)
     
-    # Show Historical Chart immediately so the page isn't empty
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical Price"))
     fig.update_layout(template="plotly_dark", title=f"{ticker} 2-Year Price History")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 2. Initialize AI (This happens in the background)
+    # 3. LOAD AI IN BACKGROUND
     with st.spinner("Initializing FinBERT AI (Loading brain...)..."):
         nlp = load_finbert()
 
@@ -105,43 +96,44 @@ def main():
     else:
         st.info(f"Neutral Sentiment: {current_sentiment:.2f}")
 
-    # 3. Forecast Logic
+    # 4. SECURE FORECAST LOGIC
     if st.button("Generate AI Forecast"):
-        # Training the model
-        X, y = create_lags(data, current_sentiment)
-        model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
-        model.fit(X, y)
+        try:
+            # Training
+            X, y = create_lags(data, current_sentiment)
+            model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5)
+            model.fit(X, y)
 
-        # Iterative Prediction Loop
-        last_values = data["Close"].values[-10:]
-        preds = []
-        
-        for i in range(forecast_days):
-            decayed_sentiment = current_sentiment * (0.9 ** i)
+            # Prediction Loop
+            last_values = data["Close"].values[-10:]
+            preds = []
             
-            # THE FIX: Combine and RESHAPE to (1, 11)
-            # This turns a list of numbers into a single row for the AI
-            combined_input = np.append(last_values, decayed_sentiment)
-            inp = combined_input.reshape(1, -1) 
-            
-            # Predict
-            p = model.predict(inp)[0]
-            preds.append(p)
-            
-            # Slide window
-            last_values = np.append(last_values[1:], p)
+            for i in range(forecast_days):
+                decayed_sentiment = current_sentiment * (0.9 ** i)
+                
+                # THE RESHAPE FIX
+                combined_input = np.append(last_values, decayed_sentiment)
+                inp = combined_input.reshape(1, -1) 
+                
+                p = model.predict(inp)[0]
+                preds.append(p)
+                last_values = np.append(last_values[1:], p)
 
-        # 4. Plot Forecast Result
-        future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
-        
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
-        fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red", width=3)))
-        fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast Result")
-        st.plotly_chart(fig2, use_container_width=True)
+            # 5. PLOT FORECAST Result
+            future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days+1)[1:]
+            
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
+            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red", width=3)))
+            fig2.update_layout(template="plotly_dark", title=f"{ticker} Forecast Result")
+            st.plotly_chart(fig2, use_container_width=True)
 
-        st.subheader("Forecasted Data (Next 10 Days)")
-        st.table(pd.DataFrame({"Date": future_dates, "Predicted Price": preds}).head(10))
+            st.subheader("Forecasted Data (Next 10 Days)")
+            st.table(pd.DataFrame({"Date": future_dates, "Predicted Price": preds}).head(10))
+            
+        except Exception as e:
+            st.error(f"An error occurred during prediction: {e}")
+            st.info("Check if your data features match (Expecting 11 features: 10 lags + 1 sentiment).")
 
 if __name__ == "__main__":
     main()
