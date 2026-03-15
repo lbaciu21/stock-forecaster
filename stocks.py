@@ -130,7 +130,6 @@ if __name__ == "__main__":
   
 '''
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
@@ -138,8 +137,14 @@ from xgboost import XGBRegressor
 import requests
 from io import StringIO
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-import torch
 import gc
+
+# FORGIVING SECRET LOADING
+try:
+    ALPHAVANTAGE_KEY = st.secrets["AV_KEY"]
+except:
+    st.warning("API Key not found in secrets.toml. Please add it to .streamlit/secrets.toml")
+    ALPHAVANTAGE_KEY = None
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
@@ -156,11 +161,7 @@ def get_sentiment(ticker, nlp):
         news_table = pd.read_html(StringIO(response.text), attrs={'id': 'news-table'})[0]
         headlines = news_table[1].head(5).tolist()
         results = nlp(headlines)
-        scores = []
-        for res in results:
-            if res['label'] == 'positive': scores.append(res['score'])
-            elif res['label'] == 'negative': scores.append(-res['score'])
-            else: scores.append(0)
+        scores = [res['score'] if res['label'] == 'positive' else -res['score'] if res['label'] == 'negative' else 0 for res in results]
         avg_score = np.mean(scores)
         gc.collect()
         return float(avg_score)
@@ -168,88 +169,97 @@ def get_sentiment(ticker, nlp):
         return 0.0
 
 @st.cache_data
-def load_data(ticker):
+def get_sp500():
     try:
-        
-        session = requests.Session()
-        session.headers.update({"User-Agent": "Mozilla/5.0"})
-        
-      
-        ticker_obj = yf.Ticker(ticker, session=session)
-        data = ticker_obj.history(period="2y")
-        
-        if data.empty or len(data) < 20:
-            return pd.DataFrame()
-            
-        data = data.reset_index()
-        data.columns = [str(c) for c in data.columns]
-        
-        if 'Close' not in data.columns and 'Price' in data.columns:
-            data.rename(columns={'Price': 'Close'}, inplace=True)
-            
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        return pd.read_html(StringIO(res.text))[0]["Symbol"].tolist()
+    except:
+        return ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]
+
+@st.cache_data
+def load_data(ticker):
+    if not ALPHAVANTAGE_KEY: return pd.DataFrame()
+    try:
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={ALPHAVANTAGE_KEY}&datatype=csv'
+        data = pd.read_csv(url)
+        if data.empty or "timestamp" not in data.columns: return pd.DataFrame()
+        data = data.rename(columns={"timestamp": "Date", "close": "Close"}).sort_values("Date")
+        data["Date"] = pd.to_datetime(data["Date"])
         return data
     except:
         return pd.DataFrame()
 
 def main():
-    st.set_page_config(page_title="Stock Forecaster AI", layout="wide")
-    st.title("📈 Stock Forecaster (XGBoost + FinBERT)")
+    st.set_page_config(page_title="AI Market Intelligence", layout="wide")
+    st.title(" AI Market Intelligence Dashboard")
     
-    st.markdown("Combined historical price data and NLP sentiment analysis.")
-    st.markdown("**Disclaimer:** Take the predictions with at least one grain of salt.")
-
-    ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA)", "AAPL").upper()
-    forecast_days = st.slider("Forecast Window (Days)", 7, 60, 30)
+    tickers = get_sp500()
+    ticker = st.selectbox("Target Asset Selection", tickers, index=tickers.index("AAPL") if "AAPL" in tickers else 0)
+    forecast_days = st.slider("Prediction Horizon (Days)", 7, 60, 30)
 
     data = load_data(ticker)
 
     if data.empty:
-        st.error(f"Data connection blocked for {ticker}. Please try again in 5 minutes or try a different ticker.")
-        if st.button("Force Refresh Connection"):
-            st.cache_data.clear()
-            st.rerun()
+        st.error("Waiting for valid API Key or Ticker data...")
         return
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
-    fig.update_layout(template="plotly_dark", title=f"{ticker} History")
+    fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Price", line=dict(color="#00ffcc")))
+    fig.update_layout(template="plotly_dark", title=f"{ticker} Historical Trend")
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.spinner("Analyzing Sentiment..."):
+    with st.spinner("Executing FinBERT Sentiment Analysis..."):
         nlp = load_finbert()
-        current_sentiment = get_sentiment(ticker, nlp)
+        sentiment = get_sentiment(ticker, nlp)
 
-    if st.button("Generate AI Forecast"):
+    st.subheader(f"Sentiment Intelligence for {ticker}")
+    if sentiment > 0.1: st.success(f"BULLISH: {sentiment:.2f}")
+    elif sentiment < -0.1: st.error(f"BEARISH: {sentiment:.2f}")
+    else: st.info(f"NEUTRAL: {sentiment:.2f}")
+
+    if st.button("Generate High-Fidelity AI Forecast"):
         try:
             df = data.copy()
+            df["Returns"] = np.log(df["Close"] / df["Close"].shift(1))
             for i in range(1, 11):
-                df[f"lag_{i}"] = df["Close"].shift(i)
-            df["sentiment"] = current_sentiment
+                df[f"lag_{i}"] = df["Returns"].shift(i)
+            df["sentiment"] = sentiment
             df.dropna(inplace=True)
             
             features = [f"lag_{i}" for i in range(1, 11)] + ["sentiment"]
-            X, y = df[features], df["Close"]
-            
-            model = XGBRegressor(n_estimators=50, learning_rate=0.05)
-            model.fit(X, y)
+            model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=6)
+            model.fit(df[features], df["Returns"])
 
-            last_values = data["Close"].tail(10).tolist()
+            last_returns = df["Returns"].tail(10).tolist()
+            last_price = data["Close"].iloc[-1]
+            hist_vol = df["Returns"].std()
+            
             preds = []
             for i in range(forecast_days):
-                decay = current_sentiment * (0.9 ** i)
-                inp = pd.DataFrame([[*last_values, decay]], columns=features)
-                p = model.predict(inp)[0]
-                preds.append(float(p))
-                last_values = last_values[1:] + [float(p)]
+                decay = sentiment * (0.9 ** i)
+                inp = pd.DataFrame([[*last_returns, decay]], columns=features)
+                pred_return = model.predict(inp)[0]
+                
+                # Volatility Randomizer
+                noise = np.random.normal(0, hist_vol * 0.5) 
+                final_return = pred_return + noise
+                
+                new_price = last_price * np.exp(final_return)
+                preds.append(new_price)
+                
+                last_price = new_price
+                last_returns = last_returns[1:] + [final_return]
 
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days + 1)[1:]
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Historical"))
-            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red")))
+            fig2.add_trace(go.Scatter(x=data["Date"].tail(20), y=data["Close"].tail(20), name="Actual"))
+            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red", dash='dash')))
+            fig2.update_layout(template="plotly_dark", title="Multi-Factor AI Projection")
             st.plotly_chart(fig2, use_container_width=True)
             
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Intelligence Failure: {e}")
 
 if __name__ == "__main__":
     main()
