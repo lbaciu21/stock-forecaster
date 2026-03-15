@@ -21,10 +21,8 @@ def get_sentiment_polygon(ticker, nlp):
     try:
         url = f"https://api.polygon.io/v2/reference/news?ticker={ticker}&limit=5&apiKey={POLYGON_KEY}"
         response = requests.get(url, timeout=5).json()
-        
         headlines = [item['title'] for item in response.get('results', [])]
         if not headlines: return 0.0
-        
         results = nlp(headlines)
         scores = [res['score'] if res['label'] == 'positive' else -res['score'] if res['label'] == 'negative' else 0 for res in results]
         gc.collect()
@@ -45,10 +43,8 @@ def load_data(ticker):
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&apiKey={POLYGON_KEY}"
-        
         response = requests.get(url, timeout=10).json()
         if 'results' not in response: return pd.DataFrame()
-            
         df = pd.DataFrame(response['results'])
         df = df.rename(columns={'c': 'Close', 't': 'Date'})
         df['Date'] = pd.to_datetime(df['Date'], unit='ms')
@@ -73,7 +69,6 @@ def main():
 
     with st.spinner(f"Running FinBERT NLP for {ticker}..."):
         nlp = load_finbert()
-    
         sentiment = get_sentiment_polygon(ticker, nlp)
 
     st.subheader(f"Sentiment Intelligence: {ticker}")
@@ -85,7 +80,10 @@ def main():
         try:
             df = data.copy()
             df["Returns"] = np.log(df["Close"] / df["Close"].shift(1))
-            for i in range(1, 11): df[f"lag_{i}"] = df["Returns"].shift(i)
+            for i in range(1, 11): 
+                df[f"lag_{i}"] = df["Returns"].shift(i)
+            
+            df["sentiment"] = sentiment
             df.dropna(inplace=True)
             
             features = [f"lag_{i}" for i in range(1, 11)] + ["sentiment"]
