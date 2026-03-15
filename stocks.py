@@ -139,12 +139,8 @@ from io import StringIO
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 import gc
 
-# FORGIVING SECRET LOADING
-try:
-    ALPHAVANTAGE_KEY = st.secrets["AV_KEY"]
-except:
-    st.warning("API Key not found in secrets.toml. Please add it to .streamlit/secrets.toml")
-    ALPHAVANTAGE_KEY = None
+
+ALPHAVANTAGE_KEY = "YOUR_ALPHA_VANTAGE_KEY_HERE" 
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
@@ -179,7 +175,6 @@ def get_sp500():
 
 @st.cache_data
 def load_data(ticker):
-    if not ALPHAVANTAGE_KEY: return pd.DataFrame()
     try:
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={ALPHAVANTAGE_KEY}&datatype=csv'
         data = pd.read_csv(url)
@@ -201,7 +196,7 @@ def main():
     data = load_data(ticker)
 
     if data.empty:
-        st.error("Waiting for valid API Key or Ticker data...")
+        st.error("Connection Error: Please verify the API Key on line 12 or check your daily limit (25/day).")
         return
 
     fig = go.Figure()
@@ -240,14 +235,10 @@ def main():
                 decay = sentiment * (0.9 ** i)
                 inp = pd.DataFrame([[*last_returns, decay]], columns=features)
                 pred_return = model.predict(inp)[0]
-                
-                # Volatility Randomizer
                 noise = np.random.normal(0, hist_vol * 0.5) 
                 final_return = pred_return + noise
-                
                 new_price = last_price * np.exp(final_return)
                 preds.append(new_price)
-                
                 last_price = new_price
                 last_returns = last_returns[1:] + [final_return]
 
