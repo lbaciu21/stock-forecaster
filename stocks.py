@@ -140,7 +140,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 import gc
 
 
-ALPHAVANTAGE_KEY = "YOUR_ALPHA_VANTAGE_KEY_HERE" 
+ALPHAVANTAGE_KEY = " O1QL56HUEYKS13QB" 
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
@@ -177,17 +177,26 @@ def get_sp500():
 def load_data(ticker):
     try:
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={ALPHAVANTAGE_KEY}&datatype=csv'
-        data = pd.read_csv(url)
-        if data.empty or "timestamp" not in data.columns: return pd.DataFrame()
+        response = requests.get(url, timeout=15)
+    
+        if "Note" in response.text or "Error Message" in response.text:
+            st.warning("Alpha Vantage API limit reached (25/day). Try again in a bit or use a new key.")
+            return pd.DataFrame()
+            
+        data = pd.read_csv(StringIO(response.text))
+        
+        if data.empty or "timestamp" not in data.columns:
+            return pd.DataFrame()
+            
         data = data.rename(columns={"timestamp": "Date", "close": "Close"}).sort_values("Date")
         data["Date"] = pd.to_datetime(data["Date"])
         return data
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
 def main():
     st.set_page_config(page_title="AI Market Intelligence", layout="wide")
-    st.title(" AI Market Intelligence Dashboard")
+    st.title(" Stocks Forecaster with XGBOOST and FinBERET")
     
     tickers = get_sp500()
     ticker = st.selectbox("Target Asset Selection", tickers, index=tickers.index("AAPL") if "AAPL" in tickers else 0)
@@ -213,7 +222,7 @@ def main():
     elif sentiment < -0.1: st.error(f"BEARISH: {sentiment:.2f}")
     else: st.info(f"NEUTRAL: {sentiment:.2f}")
 
-    if st.button("Generate High-Fidelity AI Forecast"):
+    if st.button("Generating Forecast"):
         try:
             df = data.copy()
             df["Returns"] = np.log(df["Close"] / df["Close"].shift(1))
