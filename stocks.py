@@ -140,7 +140,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 import gc
 
 
-ALPHAVANTAGE_KEY = "O1QL56HUEYKS13QB" 
+ALPHAVANTAGE_KEY = "2P3A322R4GTOVKB3" 
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
