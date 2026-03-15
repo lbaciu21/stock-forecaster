@@ -200,7 +200,7 @@ def main():
         st.info("Awaiting valid data connection...")
         return
 
-    # Visual 1: History
+   
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Price", line=dict(color="#00ffcc")))
     fig.update_layout(template="plotly_dark", title=f"{ticker} Historical Performance")
@@ -250,8 +250,8 @@ def main():
             future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days + 1)[1:]
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(x=data["Date"].tail(25), y=data["Close"].tail(25), name="Actual"))
-            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="AI Forecast", line=dict(color="red", dash='dash')))
-            fig2.update_layout(template="plotly_dark", title="AI-Driven Projection")
+            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="Forecast", line=dict(color="red", dash='dash')))
+            fig2.update_layout(template="plotly_dark", title="Projection of the stock")
             st.plotly_chart(fig2, use_container_width=True)
             
         except Exception as e:
