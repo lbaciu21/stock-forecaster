@@ -135,12 +135,13 @@ import plotly.graph_objects as go
 import numpy as np
 from xgboost import XGBRegressor
 import requests
+import time
 from io import StringIO
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 import gc
 
 
-ALPHAVANTAGE_KEY = "2P3A322R4GTOVKB3" 
+FINNHUB_KEY = "d6ri07hr01qr194mq980d6ri07hr01qr194mq98g"
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
@@ -158,56 +159,48 @@ def get_sentiment(ticker, nlp):
         headlines = news_table[1].head(5).tolist()
         results = nlp(headlines)
         scores = [res['score'] if res['label'] == 'positive' else -res['score'] if res['label'] == 'negative' else 0 for res in results]
-        avg_score = np.mean(scores)
-        gc.collect()
-        return float(avg_score)
+        return float(np.mean(scores))
     except:
         return 0.0
 
 @st.cache_data
-def get_sp500():
-    try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        return pd.read_html(StringIO(res.text))[0]["Symbol"].tolist()
-    except:
-        return ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]
-
-@st.cache_data
 def load_data(ticker):
     try:
-        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=compact&apikey={ALPHAVANTAGE_KEY}&datatype=csv'
-        response = requests.get(url, timeout=15)
-    
-        if "Note" in response.text or "Error Message" in response.text:
-            st.warning("Alpha Vantage API limit reached (25/day). Try again in a bit or use a new key.")
-            return pd.DataFrame()
-            
-        data = pd.read_csv(StringIO(response.text))
         
-        if data.empty or "timestamp" not in data.columns:
+        end = int(time.time())
+        start = end - (365 * 2 * 24 * 60 * 60) # 2 years ago
+        
+        url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={start}&to={end}&token={FINNHUB_KEY}"
+        response = requests.get(url, timeout=15).json()
+        
+        if response.get('s') != 'ok':
+            st.error(f"Finnhub Error: {response.get('s', 'Unknown Error')}")
             return pd.DataFrame()
             
-        data = data.rename(columns={"timestamp": "Date", "close": "Close"}).sort_values("Date")
-        data["Date"] = pd.to_datetime(data["Date"])
-        return data
+        
+        df = pd.DataFrame({
+            'Date': pd.to_datetime(response['t'], unit='s'),
+            'Close': response['c']
+        }).sort_values('Date')
+        return df
     except Exception as e:
+        st.error(f"Connection Error: {e}")
         return pd.DataFrame()
 
 def main():
     st.set_page_config(page_title="AI Market Intelligence", layout="wide")
-    st.title(" Stocks Forecaster with XGBOOST and FinBERET")
+    st.title(" Stocks Forecaster (Finnhub + XGBoost)")
     
-    tickers = get_sp500()
-    ticker = st.selectbox("Target Asset Selection", tickers, index=tickers.index("AAPL") if "AAPL" in tickers else 0)
+    ticker = st.text_input("Enter Ticker Symbol", "AAPL").upper()
     forecast_days = st.slider("Prediction Horizon (Days)", 7, 60, 30)
 
     data = load_data(ticker)
 
     if data.empty:
-        st.error("Connection Error: Please verify the API Key on line 12 or check your daily limit (25/day).")
+        st.info("Awaiting market data from Finnhub...")
         return
 
+    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data["Date"], y=data["Close"], name="Price", line=dict(color="#00ffcc")))
     fig.update_layout(template="plotly_dark", title=f"{ticker} Historical Trend")
@@ -222,16 +215,17 @@ def main():
     elif sentiment < -0.1: st.error(f"BEARISH: {sentiment:.2f}")
     else: st.info(f"NEUTRAL: {sentiment:.2f}")
 
-    if st.button("Generating Forecast"):
+    if st.button("Generate AI Forecast"):
         try:
             df = data.copy()
             df["Returns"] = np.log(df["Close"] / df["Close"].shift(1))
             for i in range(1, 11):
                 df[f"lag_{i}"] = df["Returns"].shift(i)
-            df["sentiment"] = sentiment
             df.dropna(inplace=True)
             
             features = [f"lag_{i}" for i in range(1, 11)] + ["sentiment"]
+            df["sentiment"] = sentiment
+            
             model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=6)
             model.fit(df[features], df["Returns"])
 
