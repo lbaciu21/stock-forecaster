@@ -1,113 +1,142 @@
+
+
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 import numpy as np
-from xgboost import XGBRegressor
-import requests
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 import gc
 
-POLYGON_KEY = "0WajjbfGwPgZuqg6JKTYQYbh3wJRDAc0" 
+from polygon import RESTClient
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+from xgboost import XGBRegressor
+
+st.set_page_config(page_title="Stock Forecaster", layout="wide")
+st.title("Stocks Forecaster: XGBoost and FinBERT, API FROM Polygon")
 
 @st.cache_resource(max_entries=1)
 def load_finbert():
-    model_name = "ProsusAI/finbert"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name)
-    return pipeline("sentiment-analysis", model=model, tokenizer=tokenizer, device=-1)
+    tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+    model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
+    return tokenizer, model
 
-def get_sentiment_polygon(ticker, nlp):
+@st.cache_data(ttl=3600)
+def get_sp500():
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    tables = pd.read_html(url)
+    df = tables[0]
+    return sorted(df["Symbol"].tolist())
+
+@st.cache_data(ttl=1800)
+def load_data(ticker, years=2):
+    client = RESTClient()
+    end = datetime.now()
+    start = end - timedelta(days=365 * years + 100)
+    aggs = list(client.list_aggs(ticker=ticker, multiplier=1, timespan="day", from_=start.strftime("%Y-%m-%d"), to=end.strftime("%Y-%m-%d"), limit=50000))
+    df = pd.DataFrame([a.__dict__ for a in aggs])
+    df = df.rename(columns={"timestamp": "Date", "close": "Close"})
+    df["Date"] = pd.to_datetime(df["Date"], unit="ms").dt.date
+    df = df.sort_values("Date").reset_index(drop=True)
+    return df[["Date", "Close"]]
+
+def get_sentiment(ticker, tokenizer, model):
     try:
-        url = f"https://api.polygon.io/v2/reference/news?ticker={ticker}&limit=5&apiKey={POLYGON_KEY}"
-        response = requests.get(url, timeout=5).json()
-        headlines = [item['title'] for item in response.get('results', [])]
-        if not headlines: return 0.0
-        results = nlp(headlines)
-        scores = [res['score'] if res['label'] == 'positive' else -res['score'] if res['label'] == 'negative' else 0 for res in results]
-        gc.collect()
-        return float(np.mean(scores))
+        client = RESTClient()
+        news = client.get_news(ticker=ticker, limit=15)
+        scores = []
+        for n in news:
+            if not getattr(n, 'title', None):
+                continue
+            text = f"{n.title} {getattr(n, 'description', '') or ''}".strip()
+            if not text:
+                continue
+            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+            with torch.no_grad():
+                logits = model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1).squeeze().numpy()
+            pos = probs[0]
+            neg = probs[1]
+            scores.append(pos - neg)
+        return np.mean(scores) if scores else 0.0
     except:
         return 0.0
 
-@st.cache_data
-def get_ticker_list():
-    return [
-        "AAPL", "NVDA", "TSLA", "MSFT", "AMZN", "GOOGL", "META", "NFLX", 
-        "AMD", "INTC", "PYPL", "BABA", "V", "MA", "JPM", "DIS", "BA", "VTI"
-    ]
+def add_technical_indicators(df):
+    df = df.copy()
+    df["SMA_5"] = df["Close"].rolling(window=5).mean()
+    df["SMA_20"] = df["Close"].rolling(window=20).mean()
+    df["Momentum"] = df["Close"].pct_change(periods=5)
+    df["Volatility"] = df["Close"].rolling(window=10).std()
+    df["MACD"] = df["SMA_5"] - df["SMA_20"]
+    return df
 
-@st.cache_data
-def load_data(ticker):
-    try:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&apiKey={POLYGON_KEY}"
-        response = requests.get(url, timeout=10).json()
-        if 'results' not in response: return pd.DataFrame()
-        df = pd.DataFrame(response['results'])
-        df = df.rename(columns={'c': 'Close', 't': 'Date'})
-        df['Date'] = pd.to_datetime(df['Date'], unit='ms')
-        return df[['Date', 'Close']]
-    except:
-        return pd.DataFrame()
+def create_features(data, sentiment, n_lags=10):
+    df = add_technical_indicators(data)
+    for i in range(1, n_lags + 1):
+        df[f"lag_{i}"] = df["Close"].shift(i)
+    df["sentiment"] = sentiment
+    df.dropna(inplace=True)
+    features = [f"lag_{i}" for i in range(1, n_lags + 1)] + ["SMA_5", "SMA_20", "Momentum", "Volatility", "MACD", "sentiment"]
+    df["Return"] = df["Close"].pct_change()
+    df.dropna(inplace=True)
+    return df[features], df["Return"], df["Close"]
 
-def main():
-    st.set_page_config(page_title="AI Market Intelligence", layout="wide")
-    st.title("Stocks Forecaster: XGBoost and FinBERT, API FROM Polygon")
+tokenizer, model = load_finbert()
+tickers = get_sp500()
+ticker = st.selectbox("Select Asset to Analyze", tickers, index=tickers.index("AAPL") if "AAPL" in tickers else 0)
+forecast_days = st.slider("Forecast Horizon (Days)", 7, 60, 30)
 
-    tickers = get_ticker_list()
-    ticker = st.selectbox("Select Asset to Analyze", tickers, index=0)
-    forecast_days = st.slider("Forecast Horizon (Days)", 7, 60, 30)
+data = load_data(ticker)
 
-    data = load_data(ticker)
-    if data.empty:
-        st.error(f"Polygon API limit reached or {ticker} data unavailable. Please wait 1 minute.")
-        return
+with st.spinner("Calculating sentiment..."):
+    current_sentiment = get_sentiment(ticker, tokenizer, model)
+    gc.collect()
 
-    st.plotly_chart(go.Figure(data=[go.Scatter(x=data["Date"], y=data["Close"], name="Historical", line=dict(color="#00ffcc"))]).update_layout(template="plotly_dark", title=f"{ticker} Trend"), use_container_width=True)
+st.subheader(f"Sentiment Intelligence: {ticker}")
+if current_sentiment > 0.15:
+    st.success(f"BULLISH ({current_sentiment:.2f})")
+elif current_sentiment < -0.15:
+    st.error(f"BEARISH ({current_sentiment:.2f})")
+else:
+    st.info(f"NEUTRAL ({current_sentiment:.2f})")
 
-    with st.spinner(f"Running FinBERT NLP for {ticker}..."):
-        nlp = load_finbert()
-        sentiment = get_sentiment_polygon(ticker, nlp)
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=pd.to_datetime(data["Date"]), y=data["Close"], name="Price", line=dict(color="#00FFAA")))
+fig.update_layout(title=f"{ticker} Trend", template="plotly_white", height=400)
+st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader(f"Sentiment Intelligence: {ticker}")
-    if sentiment > 0.05: st.success(f"BULLISH ({sentiment:.2f})")
-    elif sentiment < -0.05: st.error(f"BEARISH ({sentiment:.2f})")
-    else: st.info(f"NEUTRAL ({sentiment:.2f})")
-
-    if st.button("Generate Forecast"):
-        try:
-            df = data.copy()
-            df["Returns"] = np.log(df["Close"] / df["Close"].shift(1))
-            for i in range(1, 11): 
-                df[f"lag_{i}"] = df["Returns"].shift(i)
-            
-            df["sentiment"] = sentiment
-            df.dropna(inplace=True)
-            
-            features = [f"lag_{i}" for i in range(1, 11)] + ["sentiment"]
-            model = XGBRegressor(n_estimators=100)
-            model.fit(df[features], df["Returns"])
-
-            last_returns = df["Returns"].tail(10).values
-            last_price = data["Close"].iloc[-1]
-            preds = []
-            
-            for i in range(forecast_days):
-                sample = np.append(last_returns, sentiment * (0.9**i)).reshape(1, -1)
-                ret = model.predict(sample)[0] + np.random.normal(0, df["Returns"].std() * 0.4)
-                last_price *= np.exp(ret)
-                preds.append(last_price)
-                last_returns = np.append(last_returns[1:], ret)
-
-            future_dates = pd.date_range(data["Date"].iloc[-1], periods=forecast_days + 1)[1:]
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=data["Date"].tail(25), y=data["Close"].tail(25), name="Recent Actual"))
-            fig2.add_trace(go.Scatter(x=future_dates, y=preds, name="Forecasted Projection", line=dict(color="red", dash='dash')))
-            st.plotly_chart(fig2.update_layout(template="plotly_dark"), use_container_width=True)
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-if __name__ == "__main__":
-    main()
+if st.button("Generate Forecast"):
+    with st.spinner("Generating forecast..."):
+        X, y_returns, close_prices = create_features(data, current_sentiment)
+        
+        model_xgb = XGBRegressor(n_estimators=150, learning_rate=0.05, max_depth=5, random_state=42)
+        model_xgb.fit(X, y_returns)
+        
+        last_values = X.iloc[-1:].values[0].copy()
+        last_close = close_prices.iloc[-1]
+        preds_prices = []
+        
+        for i in range(forecast_days):
+            decayed_sent = current_sentiment * (0.92 ** i)
+            current_input = last_values.copy()
+            current_input[-1] = decayed_sent
+            ret_pred = model_xgb.predict(current_input.reshape(1, -1))[0]
+            new_price = last_close * (1 + ret_pred)
+            preds_prices.append(new_price)
+            last_close = new_price
+            if i > 5:
+                recent_mean = np.mean(preds_prices[-6:])
+                new_price = 0.85 * new_price + 0.15 * recent_mean
+                preds_prices[-1] = new_price
+                last_close = new_price
+            last_values = np.roll(last_values, -1)
+            last_values[-2] = new_price
+        
+        future_dates = pd.date_range(start=data["Date"].iloc[-1], periods=forecast_days + 1, freq='D')[1:]
+        
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=pd.to_datetime(data["Date"]), y=data["Close"], name="Recent Actual", line=dict(color="#4A90E2")))
+        fig2.add_trace(go.Scatter(x=future_dates, y=preds_prices, name="Forecasted Projection", line=dict(color="#E74C3C", dash="dash")))
+        fig2.update_layout(title=f"{ticker} Price Forecast", template="plotly_white", height=500)
+        st.plotly_chart(fig2, use_container_width=True)
